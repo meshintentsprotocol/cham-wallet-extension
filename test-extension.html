@@ -67,6 +67,21 @@
     <p style="font-size:12px;opacity:.7">Network keys: bch-chipnet, eth-sepolia, base-sepolia, arb-sepolia, op-sepolia, arc-testnet, solana-devnet, btc-testnet (and bch-mainnet, ethereum, base, arbitrum, optimism, arc, solana, btc-mainnet on mainnet). Amounts are base units: satoshis, wei, lamports.</p>
   </fieldset>
 
+  <fieldset>
+    <legend>XO Template: Mesh Limit Order</legend>
+    <p style="font-size:12px;opacity:.8;margin:0 0 8px">Test contract actions and signing generated from the Mesh XO Limit Order template.</p>
+    <div class="row">
+      <input id="xoSellAmount" value="50000" placeholder="Sell amount (sats)" aria-label="Sell Amount" />
+      <input id="xoBuyAmount" value="10000" placeholder="Buy amount" aria-label="Buy Amount" />
+    </div>
+    <div class="row">
+      <input id="xoBuyCategory" value="dfe50223c8d5cba8dcef8dff6d92b61deb88a8ba44947367f2b746487b56039b" placeholder="Buy token category" aria-label="Buy Token Category" />
+      <input id="xoExpiry" value="1750000000" placeholder="Expiry unix timestamp" aria-label="Expiry" />
+    </div>
+    <button id="xoExport">Export XO Invitation JSON</button>
+    <button id="xoSignCancel">bch_signTransaction (CancelEarly Action)</button>
+  </fieldset>
+
   <pre id="log" aria-live="polite"></pre>
 
   <script>
@@ -115,6 +130,90 @@
       };
       $('getNetwork').click();
       $('accounts').click();
+
+      $('xoExport').onclick = () => {
+        const inv = {
+          protocol: 'mesh-xo-v1',
+          templateIdentifier: 'mesh-limit-order-v1',
+          templateName: 'Mesh Limit Order Swap',
+          intent: 'cancelEarly',
+          network: $('network').textContent === 'mainnet' ? 'mainnet' : 'chipnet',
+          params: {
+            makerPkh: $('account').textContent,
+            sellTokenCategory: '0x',
+            buyTokenCategory: $('xoBuyCategory').value.trim(),
+            sellAmount: $('xoSellAmount').value.trim(),
+            buyAmount: $('xoBuyAmount').value.trim(),
+            expiryTime: Number($('xoExpiry').value.trim() || '1750000000'),
+          },
+          meta: {
+            createdAt: new Date().toISOString(),
+            debugToolUrl: 'https://stack.xo.cash/tools/debug',
+          }
+        };
+        log('XO Invitation JSON', inv);
+      };
+
+      $('xoSignCancel').onclick = async () => {
+        const address = provider.selectedAddress || $('account').textContent;
+        if (!address || address === 'none') {
+          alert('Connect wallet first.');
+          return;
+        }
+        const placeholderSig = '00'.repeat(65);
+        const placeholderPk = '00'.repeat(33);
+        const mockRedeemScript = '0480e14e680210270350c300' + '5679009c63587a5879adc3529dc576040065cd1da269567a9f690376a9147c7e0288ac7e00cd887800876300cc5479a2696700d152798800d35479a26900cc02e803a26968557aa90376a9147c7e0288ac7e51cd887600876351cc5379a2696751d1788851d35379a269686d6d7551675679519c63557ab1750376a9147c7e0288ac7e00cd887600876300cc5379a2696700d1788800d35379a269686d6d755167567a529d5679a97888577a577aad0376a9147c7e0288ac7e00cd887600876300cc5379a2696700d1788800d35379a269686d6d75516868';
+        const dummyCovenantLocking = 'aa20' + '11'.repeat(32) + '87';
+        const dummyP2pkhLocking = '76a914' + '22'.repeat(20) + '88ac';
+
+        const tx = {
+          version: 2,
+          locktime: 0,
+          inputs: [
+            {
+              outpointIndex: 0,
+              outpointTransactionHash: `<Uint8Array: 0x${'aa'.repeat(32)}>`,
+              sequenceNumber: 0xfffffffe,
+              unlockingBytecode: `<Uint8Array: 0x41${placeholderSig}21${placeholderPk}01024c${(mockRedeemScript.length/2).toString(16).padStart(2, '0')}${mockRedeemScript}>`,
+            },
+            {
+              outpointIndex: 0,
+              outpointTransactionHash: `<Uint8Array: 0x${'bb'.repeat(32)}>`,
+              sequenceNumber: 0xfffffffe,
+              unlockingBytecode: '<Uint8Array: 0x>',
+            }
+          ],
+          outputs: [
+            { lockingBytecode: `<Uint8Array: 0x${dummyP2pkhLocking}>`, valueSatoshis: '<bigint: 50000n>' },
+            { lockingBytecode: `<Uint8Array: 0x${dummyP2pkhLocking}>`, valueSatoshis: '<bigint: 8500n>' }
+          ]
+        };
+
+        const sourceOutputs = [
+          {
+            lockingBytecode: `<Uint8Array: 0x${dummyCovenantLocking}>`,
+            valueSatoshis: '<bigint: 50000n>',
+            contract: {
+              name: 'LimitOrderSwap',
+              redeemScript: `<Uint8Array: 0x${mockRedeemScript}>`,
+            }
+          },
+          {
+            lockingBytecode: `<Uint8Array: 0x${dummyP2pkhLocking}>`,
+            valueSatoshis: '<bigint: 10000n>',
+          }
+        ];
+
+        return call('bch_signTransaction', {
+          method: 'bch_signTransaction',
+          params: [{
+            transaction: tx,
+            sourceOutputs,
+            broadcast: false,
+            userPrompt: 'Cancel Mesh Limit Order: Reclaim 50,000 sats',
+          }]
+        });
+      };
     }
 
     if (window.bchIntents) start(window.bchIntents);

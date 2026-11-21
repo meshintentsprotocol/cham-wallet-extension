@@ -147,9 +147,10 @@ export function parseSignRequest(params: unknown[] | undefined): SignTxRequest |
       if (typeof token === 'string') return token;
       source.token = token;
     }
-    if (raw.contract?.artifact?.contractName) {
+    const contractName = raw.contract?.name ?? raw.contract?.artifact?.contractName;
+    if (contractName) {
       if (!isBytes(raw.contract.redeemScript)) return `Contract input ${i} does not include its redeem script.`;
-      source.contract = { name: String(raw.contract.artifact.contractName), redeemScript: raw.contract.redeemScript };
+      source.contract = { name: String(contractName), redeemScript: raw.contract.redeemScript };
     }
     sourceOutputs.push(source);
   }
