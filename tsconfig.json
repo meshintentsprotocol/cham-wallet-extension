@@ -15,7 +15,9 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@bch-intents/wallet-core/*": ["../bch-intents-wallet-core/src/*"]
+      "@bch-intents/wallet-core/*": ["../bch-intents-wallet-core/src/*"],
+      "@bch-xo-templates/*": ["../bch-xo-templates/src/*"],
+      "@bch-xo-templates": ["../bch-xo-templates/src/index"]
     }
   },
   "include": ["src"]

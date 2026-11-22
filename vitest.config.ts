@@ -2,7 +2,13 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
 export default defineConfig({
-  resolve: { alias: { '@': resolve(__dirname, 'src'), '@bch-intents/wallet-core': resolve(__dirname, '../bch-intents-wallet-core/src') } },
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+      '@bch-intents/wallet-core': resolve(__dirname, '../bch-intents-wallet-core/src'),
+      '@bch-xo-templates': resolve(__dirname, '../bch-xo-templates/src/index.ts'),
+    },
+  },
   // The extension's PostCSS/Tailwind setup is for the UI build; unit tests load no CSS.
   css: { postcss: { plugins: [] } },
   test: {

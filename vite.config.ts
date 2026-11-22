@@ -42,6 +42,7 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
       // The shared package is consumed as source, from its sibling repository.
       '@bch-intents/wallet-core': resolve(__dirname, '../bch-intents-wallet-core/src'),
+      '@bch-xo-templates': resolve(__dirname, '../bch-xo-templates/src/index.ts'),
       buffer: 'buffer/',
       // sodium-native is a C++ Node.js addon and cannot run in a browser. Without this alias WDK's Solana and
       // Bitcoin wallets fail to derive ("sodium_memzero is not a function"). The frontend has the same alias.

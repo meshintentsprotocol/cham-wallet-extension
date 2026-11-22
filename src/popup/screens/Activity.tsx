@@ -24,7 +24,8 @@ import { solTxStatus } from '@/lib/solana';
 import { errorMessage, formatAmount, hostOf, shortAddr, timeAgo } from '@/lib/format';
 import type { MessageKey } from '@/lib/i18n';
 import { swapServerApiFor } from '@/swap/api';
-import { createRelayerApi, TERMINAL_INTENT } from '@/swap/cashtoken';
+import { createRelayerApi, TERMINAL_INTENT, type Intent } from '@/swap/cashtoken';
+import { fetchOpenOrders, cancelOrRefundOrder } from '@/lib/orders';
 import { feeIsDue, payFee, resumeBridge } from '@/swap/flows';
 import { bridgeDeps, getSwapConfig } from '@/swap/runtime';
 
@@ -66,8 +67,27 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
   const [actions, setActions] = useState<Record<string, BridgeAction>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
+  const [subTab, setSubTab] = useState<'history' | 'orders'>('history');
+  const [openOrders, setOpenOrders] = useState<Intent[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [orderActionBusy, setOrderActionBusy] = useState<string | null>(null);
+  const [orderActionSuccess, setOrderActionSuccess] = useState<string | null>(null);
 
   const modeKeys = useMemo(() => networksFor(mode).map(n => n.key), [mode]);
+  const bchAddr = addresses.bch || wdk.bchAddress || wdk.bchWallet?.address;
+
+  const loadOrders = useCallback(async () => {
+    if (!bchAddr) return;
+    setOrdersLoading(true);
+    try {
+      const orders = await fetchOpenOrders(bchAddr, mode === 'mainnet' ? 'mainnet' : 'chipnet');
+      setOpenOrders(orders);
+    } catch (err: any) {
+      console.warn('[Activity] loadOrders failed:', err);
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, [bchAddr, mode]);
 
   const loadLocal = useCallback(async () => {
     const all = await readActivity();
@@ -179,16 +199,47 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
 
   const reload = useCallback(async () => {
     setLoading(true);
-    await Promise.all([loadChain(), reconcile()]);
+    await Promise.all([loadChain(), reconcile(), loadOrders()]);
     await loadLocal();
     setLoading(false);
-  }, [loadChain, reconcile, loadLocal]);
+  }, [loadChain, reconcile, loadLocal, loadOrders]);
 
   useEffect(() => {
     reload();
-    const id = setInterval(() => { if (document.visibilityState === 'visible') reconcile().then(loadLocal); }, 12_000);
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        reconcile().then(loadLocal);
+        loadOrders();
+      }
+    }, 12_000);
     return () => clearInterval(id);
-  }, [reload, reconcile, loadLocal]);
+  }, [reload, reconcile, loadLocal, loadOrders]);
+
+  const handleCancelOrRefund = async (order: Intent) => {
+    setOrderActionBusy(order.id);
+    setActionError('');
+    setOrderActionSuccess(null);
+    try {
+      const res = await cancelOrRefundOrder({
+        order,
+        bchWallet: wdk.bchWallet,
+        networkMode: mode === 'mainnet' ? 'mainnet' : 'chipnet',
+        userAddress: account,
+      });
+      setOrderActionSuccess(
+        res.isExpired
+          ? `Refund broadcast! TX: ${shortAddr(res.txid, 8, 6)}`
+          : `Order cancelled! TX: ${shortAddr(res.txid, 8, 6)}`
+      );
+      await loadOrders();
+      await loadLocal();
+      refreshPortfolio();
+    } catch (err: any) {
+      setActionError(errorMessage(err) || 'Failed to cancel or refund order.');
+    } finally {
+      setOrderActionBusy(null);
+    }
+  };
 
   const runAction = async (entry: ActivityEntry, action: BridgeAction) => {
     setBusy(entry.id);
@@ -224,48 +275,243 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
         right={<IconBtn label={t('common.refresh')} onClick={reload} testId="activity-refresh"><span style={{ display: 'flex', animation: loading ? 'mxspin 0.8s linear infinite' : undefined }}><MI.refresh size={13} /></span></IconBtn>}
       />
 
+      <div style={{ display: 'flex', background: MX.surface2, padding: 3, borderRadius: 10, margin: '6px 12px 2px' }}>
+        <button
+          type="button"
+          onClick={() => { setSubTab('history'); setActionError(''); setOrderActionSuccess(null); }}
+          style={{
+            flex: 1,
+            padding: '6px 0',
+            borderRadius: 8,
+            border: 'none',
+            background: subTab === 'history' ? MX.surface : 'transparent',
+            color: subTab === 'history' ? MX.fg : MX.fgMute,
+            fontWeight: subTab === 'history' ? 700 : 500,
+            fontSize: 12,
+            cursor: 'pointer',
+            boxShadow: subTab === 'history' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+          }}
+        >
+          {t('activity.title')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setSubTab('orders'); setActionError(''); setOrderActionSuccess(null); }}
+          style={{
+            flex: 1,
+            padding: '6px 0',
+            borderRadius: 8,
+            border: 'none',
+            background: subTab === 'orders' ? MX.surface : 'transparent',
+            color: subTab === 'orders' ? MX.fg : MX.fgMute,
+            fontWeight: subTab === 'orders' ? 700 : 500,
+            fontSize: 12,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            boxShadow: subTab === 'orders' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+          }}
+        >
+          <span>Open Orders</span>
+          {openOrders.length > 0 && (
+            <span
+              style={{
+                background: MX.primary,
+                color: '#000',
+                fontSize: 10,
+                fontWeight: 800,
+                borderRadius: 99,
+                padding: '0 6px',
+                lineHeight: '16px',
+                height: 16,
+              }}
+            >
+              {openOrders.length}
+            </span>
+          )}
+        </button>
+      </div>
+
       <div data-testid="activity-list" style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 5 }}>
         {actionError && <Banner tone="error">{actionError}</Banner>}
-        {loading && entries.length === 0 && <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spinner size={22} color={MX.primary} /></div>}
-        {!loading && entries.length === 0 && <EmptyState icon={<MI.activity size={28} />} title={t('activity.empty.title')} body={t('activity.empty.body')} />}
+        {orderActionSuccess && <Banner tone="success">{orderActionSuccess}</Banner>}
 
-        {entries.map(e => {
-          const net = getNetwork(e.network);
-          const Icon = KIND_ICON[e.kind];
-          const action = actions[e.id];
-          const amountText = e.kind === 'receive' ? `+${e.received}` : e.kind === 'swap' || e.kind === 'bridge' ? `${e.sent} → ${e.received}` : e.sent ? `−${e.sent}` : '';
-          return (
-            <div key={e.id} data-testid={`activity-${e.kind}`} style={{ background: MX.surface, border: `1px solid ${MX.border}`, borderRadius: 13, overflow: 'hidden' }}>
-              <button type="button" onClick={() => setOpen(e)} className="mx-press" style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 10px', background: 'transparent', border: 'none', color: MX.fg, cursor: 'pointer', textAlign: 'left' }}>
-                <div style={{ position: 'relative', flexShrink: 0 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, background: e.kind === 'receive' ? MX.primaryDim : MX.surface2, color: e.kind === 'receive' ? MX.primary : MX.fgMute, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Icon size={14} />
+        {subTab === 'orders' ? (
+          <>
+            {ordersLoading && openOrders.length === 0 && (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Spinner size={22} color={MX.primary} />
+              </div>
+            )}
+            {!ordersLoading && openOrders.length === 0 && (
+              <EmptyState
+                icon={<MI.swap size={28} />}
+                title="No Open Orders"
+                body="You have no active limit orders on this network. Orders created on dApps or in-wallet will automatically appear here."
+              />
+            )}
+            {openOrders.map(order => {
+              const isSellToken = !!order.sellToken && order.sellToken !== 'BCH' && order.sellToken !== '0x';
+              const isBuyToken = !!order.buyToken && order.buyToken !== 'BCH' && order.buyToken !== '0x';
+              const sellSymbol = isSellToken ? shortAddr(order.sellToken, 4, 3) : 'BCH';
+              const buySymbol = isBuyToken ? shortAddr(order.buyToken, 4, 3) : 'BCH';
+
+              const sellDisplay = isSellToken
+                ? `${order.sellAmount} ${sellSymbol}`
+                : `${formatAmount(BigInt(order.sellAmount), 8, 4)} BCH`;
+              const buyDisplay = isBuyToken
+                ? `${order.buyAmount} ${buySymbol}`
+                : `${formatAmount(BigInt(order.buyAmount), 8, 4)} BCH`;
+
+              const nowSec = Math.floor(Date.now() / 1000);
+              const expirySec = order.refundableFrom ?? (order as any).covenantExpiry ?? (order as any).expiryTime;
+              const isExpired = expirySec ? nowSec >= expirySec : false;
+              const timeLeftMin = expirySec ? Math.max(0, Math.floor((expirySec - nowSec) / 60)) : null;
+
+              const isLimit = order.type === 'LIMIT_ORDER';
+              const isDutch = order.type === 'DUTCH_AUCTION';
+
+              return (
+                <div
+                  key={order.id}
+                  style={{
+                    background: MX.surface,
+                    border: `1px solid ${MX.border}`,
+                    borderRadius: 13,
+                    padding: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 5, background: MX.surface2, color: MX.fg }}>
+                        {isLimit ? 'Limit Order' : 'Dutch Auction'}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: '2px 6px',
+                          borderRadius: 5,
+                          background: isExpired ? MX.amberDim : MX.primaryDim,
+                          color: isExpired ? MX.amber : MX.primary,
+                        }}
+                      >
+                        {isExpired ? 'Expired (Refundable)' : 'Open / Active'}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 10.5, color: MX.fgMute }}>
+                      {isExpired ? 'Ready to claim' : timeLeftMin !== null ? `Expires in ${timeLeftMin}m` : 'Pending'}
+                    </span>
                   </div>
-                  {net && <div style={{ position: 'absolute', right: -5, bottom: -4 }}><TokenIcon symbol={net.short} logo={net.logo} palette={net.palette} size={15} /></div>}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 700 }}>{t(KIND_LABEL[e.kind])}</span>
-                    {e.status !== 'confirmed' && <StatusPill status={e.status} />}
+
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0' }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: MX.fgMute }}>Selling</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: MX.fg }}>{sellDisplay}</div>
+                    </div>
+                    <div style={{ color: MX.fgMute, fontSize: 14 }}>→</div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 10, color: MX.fgMute }}>Buying</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: MX.primary }}>{buyDisplay}</div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 10.5, color: MX.fgMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.origin ? hostOf(e.origin) : e.counterparty ? t('activity.to', { address: shortAddr(e.counterparty, 6, 4) }) : net?.name} · {timeAgo(e.at)}
+
+                  <div style={{ fontSize: 10, color: MX.fgMute, fontFamily: MX.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    Covenant: {shortAddr(order.contractAddress, 10, 8)}
                   </div>
+
+                  {isLimit && (
+                    <MSecondary
+                      h={32}
+                      loading={orderActionBusy === order.id}
+                      onClick={() => handleCancelOrRefund(order)}
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: isExpired ? MX.primary : MX.amber,
+                        borderColor: isExpired ? MX.primary : MX.amberBorder,
+                        background: isExpired ? MX.primaryDim : MX.amberDim,
+                      }}
+                    >
+                      {isExpired ? 'Claim Order Refund' : 'Cancel Order Early'}
+                    </MSecondary>
+                  )}
+
+                  {isDutch && (
+                    isExpired ? (
+                      <MSecondary
+                        h={32}
+                        loading={orderActionBusy === order.id}
+                        onClick={() => handleCancelOrRefund(order)}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: MX.primary,
+                          borderColor: MX.primary,
+                          background: MX.primaryDim,
+                        }}
+                      >
+                        Claim Auction Refund
+                      </MSecondary>
+                    ) : (
+                      <div style={{ fontSize: 10.5, color: MX.fgMute, textAlign: 'center', padding: '2px 0' }}>
+                        Dutch Auction decaying on-chain. Fills automatically when market price matches.
+                      </div>
+                    )
+                  )}
                 </div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', textAlign: 'right', maxWidth: '46%', overflowWrap: 'anywhere', color: e.kind === 'receive' ? MX.primary : MX.fg }}>
-                  {amountText}
+              );
+            })}
+          </>
+        ) : (
+          <>
+            {loading && entries.length === 0 && <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spinner size={22} color={MX.primary} /></div>}
+            {!loading && entries.length === 0 && <EmptyState icon={<MI.activity size={28} />} title={t('activity.empty.title')} body={t('activity.empty.body')} />}
+
+            {entries.map(e => {
+              const net = getNetwork(e.network);
+              const Icon = KIND_ICON[e.kind];
+              const action = actions[e.id];
+              const amountText = e.kind === 'receive' ? `+${e.received}` : e.kind === 'swap' || e.kind === 'bridge' ? `${e.sent} → ${e.received}` : e.sent ? `−${e.sent}` : '';
+              return (
+                <div key={e.id} data-testid={`activity-${e.kind}`} style={{ background: MX.surface, border: `1px solid ${MX.border}`, borderRadius: 13, overflow: 'hidden' }}>
+                  <button type="button" onClick={() => setOpen(e)} className="mx-press" style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 10px', background: 'transparent', border: 'none', color: MX.fg, cursor: 'pointer', textAlign: 'left' }}>
+                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 10, background: e.kind === 'receive' ? MX.primaryDim : MX.surface2, color: e.kind === 'receive' ? MX.primary : MX.fgMute, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Icon size={14} />
+                      </div>
+                      {net && <div style={{ position: 'absolute', right: -5, bottom: -4 }}><TokenIcon symbol={net.short} logo={net.logo} palette={net.palette} size={15} /></div>}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700 }}>{t(KIND_LABEL[e.kind])}</span>
+                        {e.status !== 'confirmed' && <StatusPill status={e.status} />}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: MX.fgMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {e.origin ? hostOf(e.origin) : e.counterparty ? t('activity.to', { address: shortAddr(e.counterparty, 6, 4) }) : net?.name} · {timeAgo(e.at)}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', textAlign: 'right', maxWidth: '46%', overflowWrap: 'anywhere', color: e.kind === 'receive' ? MX.primary : MX.fg }}>
+                      {amountText}
+                    </div>
+                  </button>
+                  {action && (
+                    <div style={{ padding: '0 10px 10px' }}>
+                      <MSecondary h={34} loading={busy === e.id} onClick={() => runAction(e, action)} testId={`activity-${action.kind}`} style={{ color: MX.amber, borderColor: MX.amberBorder, background: MX.amberDim }}>
+                        {action.kind === 'payFee' ? t('activity.payFee') : t('activity.resume')}
+                      </MSecondary>
+                    </div>
+                  )}
                 </div>
-              </button>
-              {action && (
-                <div style={{ padding: '0 10px 10px' }}>
-                  <MSecondary h={34} loading={busy === e.id} onClick={() => runAction(e, action)} testId={`activity-${action.kind}`} style={{ color: MX.amber, borderColor: MX.amberBorder, background: MX.amberDim }}>
-                    {action.kind === 'payFee' ? t('activity.payFee') : t('activity.resume')}
-                  </MSecondary>
-                </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </>
+        )}
       </div>
 
       <MBottomNav active="activity" onNavigate={onNavigate} />
